@@ -99,10 +99,17 @@ class WebSocketServer:
         try:
             async for msg in ws.iter_any():
                 # Handle incoming messages (ping/pong, etc)
-                if isinstance(msg, str) and msg == "ping":
-                    await ws.send_str("pong")
+                if isinstance(msg, str):
+                    if msg == "ping":
+                        try:
+                            await ws.send_str("pong")
+                        except Exception as e:
+                            logger.debug(f"Error sending pong: {e}")
+                            break
+        except asyncio.CancelledError:
+            logger.debug(f"WebSocket cancelled: {client_addr}")
         except Exception as e:
-            logger.debug(f"WebSocket error: {e}")
+            logger.debug(f"WebSocket error ({client_addr}): {e}")
         finally:
             self.clients.discard(ws)
             logger.info(f"WebSocket client disconnected. Total: {len(self.clients)}")
@@ -145,17 +152,25 @@ class WebSocketServer:
             disconnected = []
             for client in self.clients:
                 try:
-                    await asyncio.wait_for(client.send_str(message), timeout=1.0)
+                    await client.send_str(message)
+                except asyncio.TimeoutError:
+                    disconnected.append(client)
+                    logger.debug(f"Client send timeout")
+                except ConnectionError:
+                    disconnected.append(client)
+                except RuntimeError:
+                    # Client already closed
+                    disconnected.append(client)
                 except Exception as e:
                     disconnected.append(client)
-                    logger.debug(f"Failed to send to client: {e}")
+                    logger.debug(f"Failed to send to client: {type(e).__name__}")
 
             # Remove disconnected clients
             for client in disconnected:
                 self.clients.discard(client)
 
         except Exception as e:
-            logger.error(f"Error broadcasting frame: {e}")
+            logger.debug(f"Error broadcasting frame: {type(e).__name__}: {e}")
 
     @staticmethod
     def _encode_heatmap(heatmap) -> str:

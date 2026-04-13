@@ -255,7 +255,7 @@
             ws.onopen = () => {
                 statusDiv.textContent = '🟢 Connected';
                 statusDiv.className = 'status connected';
-                console.log('Connected to VESTIGIUM server');
+                console.log('✓ Connected to VESTIGIUM server');
             };
 
             ws.onmessage = (event) => {
@@ -264,12 +264,15 @@
                     frameBuffer = [frame];  // Keep latest frame
 
                     // Update heatmap image
-                    if (frame.heatmap) {
+                    if (frame.heatmap && frame.heatmap.length > 0) {
                         const img = new Image();
-                        img.src = frame.heatmap;
                         img.onload = () => {
                             heatmapImage = img;
                         };
+                        img.onerror = () => {
+                            console.warn('Failed to load heatmap image');
+                        };
+                        img.src = frame.heatmap;
                     }
 
                     // Update stats
@@ -278,7 +281,7 @@
                     updateClusters(frame.clusters);
 
                 } catch (e) {
-                    console.error('Failed to parse frame:', e);
+                    console.warn('Failed to parse frame:', e);
                 }
             };
 
@@ -291,7 +294,7 @@
             ws.onclose = () => {
                 statusDiv.textContent = '⚫ Disconnected';
                 statusDiv.className = 'status disconnected';
-                console.log('Disconnected from server, retrying...');
+                console.log('Disconnected from server, retrying in 3s...');
                 setTimeout(connect, 3000);
             };
         }
