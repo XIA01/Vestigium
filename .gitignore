@@ -1,0 +1,11 @@
+.buildozer/
+bin/
+.gradle
+.DS_Store
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.idea/
+*.iml
