@@ -26,7 +26,7 @@ async def run_pipeline(system):
 
 def get_app():
     """Create and return FastAPI app for uvicorn"""
-    system = VestigiumSystem(simulate=True)
+    system = VestigiumSystem(simulate=False)
     app = system.ws_server.get_app()
 
     # Store system reference in app state for access in routes

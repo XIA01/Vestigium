@@ -12,6 +12,7 @@ import logging
 from typing import Optional
 
 from .ingestion import WifiScanner
+from .ingestion.adb_scanner import ADBWifiScanner
 from .backend import SignalProcessor, NeuromorphicEngine, SLAMTopological
 from .visualization import WebSocketServer
 from .utils import get_config, get_logger, setup_logging
@@ -83,8 +84,14 @@ class VestigiumSystem:
             self.wifi_scanner = None
             logger.info("✓ Using SIMULATED RSSI (no WiFi scanner)")
         else:
-            self.wifi_scanner = WifiScanner()
-            logger.info("✓ WiFi Scanner initialized")
+            # Try ADB first (Android phone), fallback to iw (Linux WiFi)
+            try:
+                self.wifi_scanner = ADBWifiScanner()
+                logger.info("✓ ADB WiFi Scanner initialized (Android phone)")
+            except Exception as e:
+                logger.warning(f"ADB scanner failed: {e}, using Linux iw")
+                self.wifi_scanner = WifiScanner()
+                logger.info("✓ WiFi Scanner (iw) initialized")
 
         # Statistics
         self.frame_count = 0
@@ -157,17 +164,29 @@ class VestigiumSystem:
                 yield rssi_data
 
         else:
-            # Simulated data
-            while not self.shutdown_event.is_set():
-                # Synthetic RSSI with moving object pattern
-                rssi_data = np.random.normal(-60, 5, size=(153, 2)).astype(np.float32)
+            # Simulated data with continuous moving objects
+            objects = [
+                {"period": 300, "phase": 0, "amp": 4, "aps": slice(0, 20)},      # Object 1: slow orbit
+                {"period": 150, "phase": 100, "amp": 3, "aps": slice(40, 60)},   # Object 2: medium
+                {"period": 400, "phase": 200, "amp": 5, "aps": slice(100, 130)}, # Object 3: large
+            ]
 
-                # Add simulated object
-                if 50 < self.frame_count < 200:
-                    angle = (self.frame_count - 50) * 0.05
-                    x_perturb = np.sin(angle) * 3
-                    y_perturb = np.cos(angle) * 3
-                    rssi_data[:10, :] -= (x_perturb + y_perturb) * 2
+            while not self.shutdown_event.is_set():
+                # Synthetic RSSI baseline
+                rssi_data = np.random.normal(-60, 4, size=(153, 2)).astype(np.float32)
+
+                # Inject multiple moving objects
+                for obj in objects:
+                    angle = (self.frame_count % obj["period"]) * (2 * np.pi / obj["period"])
+                    phase_offset = obj["phase"] * (2 * np.pi / 360)
+
+                    # Circular motion in 2D
+                    x_sig = np.sin(angle + phase_offset) * obj["amp"]
+                    y_sig = np.cos(angle + phase_offset) * obj["amp"]
+
+                    # Attenuate signal in selected APs
+                    signal_strength = (x_sig + y_sig) * 1.5
+                    rssi_data[obj["aps"], :] -= np.abs(signal_strength)
 
                 yield rssi_data
                 await asyncio.sleep(0.01)  # ~100 Hz
@@ -251,8 +270,8 @@ async def main():
     """Main entry point."""
     setup_logging(level="INFO", log_file="logs/vestigium.log")
 
-    # Initialize system
-    system = VestigiumSystem(simulate=True)
+    # Initialize system (use real WiFi from Android phone via ADB)
+    system = VestigiumSystem(simulate=False)
 
     # Handle signals
     loop = asyncio.get_event_loop()
