@@ -9,7 +9,11 @@ source.include_exts = py
 
 version = 0.1
 
-requirements = python3,requests
+# Minimal requirements - no JNI dependencies
+requirements = python3
+
+# Add requests via pip, not p4a
+p4a.requires = requests
 
 orientation = portrait
 fullscreen = 0
@@ -24,5 +28,9 @@ android.accept_sdk_license = True
 log_level = 2
 warn_on_root = 1
 
-# Service bootstrap
+# Service bootstrap - no UI
 p4a_bootstrap = service
+p4a.setup_dir = .buildozer/android/platform/build-{arch}/build/other_builds
+
+# Exclude JNI
+p4a_private_storage = True
