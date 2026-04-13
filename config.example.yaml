@@ -1,0 +1,217 @@
+# VESTIGIUM Configuration File
+# Copia este archivo a config.yaml y configura según tu hardware
+
+# ============================================================================
+# HARDWARE - Configuración del Router ZTE
+# ============================================================================
+hardware:
+  router:
+    ip: "192.168.1.1"           # IP del router ZTE
+    port: 80                     # Puerto HTTP (usualmente 80)
+    username: "admin"            # Usuario del router
+    password: "admin"            # Contraseña (cambiar de default)
+    model: "ZTE_F660"            # Modelo del router
+
+  gpu:
+    enabled: true               # ¿Usar GPU para JAX?
+    device: "cuda:0"            # GPU a usar (cuda:0, cuda:1, etc)
+    memory_fraction: 0.9        # % de VRAM a usar
+
+  polling:
+    max_samples_per_second: 100 # Frecuencia de polling WiFi
+    timeout_seconds: 5          # Timeout en escaneos
+
+# ============================================================================
+# SIGNAL PROCESSING - Fase 1: CSI Virtual
+# ============================================================================
+signal_processing:
+  # Banda 2.4GHz
+  band_2_4ghz:
+    enabled: true
+    channels: [1, 6, 11]        # Canales WiFi a monitorear
+    smoothing_window: 10        # Ventana temporal para suavizado
+
+  # Banda 5GHz
+  band_5ghz:
+    enabled: true
+    channels: [36, 40, 44, 48, 149, 153, 157, 161]
+    smoothing_window: 10
+
+  # Análisis de varianza (scintillation)
+  scintillation:
+    high_frequency_cutoff: 20   # Hz - filtro high-pass
+    window_size_ms: 100         # Ventana temporal para análisis
+    sensitivity: 0.5            # 0-1, qué tan sensible a cambios
+
+  # Fusión de bandas
+  band_fusion:
+    enabled: true
+    attenuation_factor: 1.5     # Peso relativo 5GHz vs 2.4GHz
+    depth_estimation: true      # ¿Estimar profundidad?
+
+# ============================================================================
+# NEUROMORPHIC ENGINE - Fase 2: Motor de Spikes JAX
+# ============================================================================
+neuromorphic:
+  # Configuración general
+  backend: "jax"               # "jax" o "numpy" para debug
+  precision: "float32"         # float32 o float64
+
+  # Filtro de Partículas Bayesiano
+  particle_filter:
+    num_particles: 1000        # Número de partículas
+    resampling_threshold: 0.5  # Cuándo resamplear
+    motion_model: "brownian"   # "brownian", "linear", "adaptive"
+
+  # Red E-SKAN de Contraste
+  skan_network:
+    num_neurons: 256           # Neuronas integradoras
+    spike_threshold: 0.7       # Umbral de disparo (0-1)
+    refractory_period_ms: 10   # Período refractario
+    learning_rate: 0.001       # Para aprendizaje online
+
+  # Clustering por Huella de Radio
+  clustering:
+    algorithm: "kmeans"        # "kmeans", "dbscan", "gaussian_mixture"
+    max_clusters: 10           # Máximas masas simultáneas
+    min_cluster_size: 2        # Mínimo de routers para validar un cluster
+    size_estimation: true      # ¿Estimar tamaño de masa?
+
+# ============================================================================
+# SLAM TOPOLÓGICO - Fase 3: Mapeo Emergente
+# ============================================================================
+slam:
+  # Configuración del mapa
+  map:
+    width_meters: 50           # Ancho del área a mapear
+    height_meters: 50          # Alto del área a mapear
+    resolution_cm: 10          # Tamaño de cada píxel
+    dynamic: true              # ¿Mapa dinámico?
+
+  # Heatmap de probabilidad
+  heatmap:
+    decay_factor: 0.95         # Olvido exponencial (0-1)
+    peak_temperature: 1.0      # Temperatura máxima
+    blur_radius_pixels: 5      # Suavizado gaussiano
+
+  # Obstáculos
+  obstacle_detection:
+    enabled: true
+    signal_threshold: -70      # dBm - mínimo para detectar
+    movement_frequency_hz: 1   # Movimientos esperados por segundo
+
+  # Auto-calibración
+  auto_calibration:
+    enabled: true
+    stochastic_stretching: true # Ajustes automáticos
+    update_interval_seconds: 60 # Cada cuánto recalibrar
+
+# ============================================================================
+# VISUALIZATION - Fase 4: Frontend WebSocket
+# ============================================================================
+visualization:
+  # Servidor WebSocket
+  server:
+    host: "0.0.0.0"            # Host para WebSocket
+    port: 5000                 # Puerto
+    debug: false               # Debug mode
+
+  # Canvas 2D
+  canvas:
+    width: 1200                # Píxeles
+    height: 800
+    fps: 30                    # Fotogramas por segundo
+    motion_blur: true          # Motion blur effect
+    blur_amount: 0.3           # 0-1, intensidad del blur
+
+  # Orbes de luz (clusters)
+  orbs:
+    glow_intensity: 0.8        # 0-1
+    trail_length: 50           # Fotogramas de rastro
+    color_gradient: "hot"      # "hot", "cool", "viridis"
+
+  # Update rate
+  update_rate_ms: 33           # 30 FPS = 33ms
+
+# ============================================================================
+# LOGGING & DEBUG
+# ============================================================================
+logging:
+  level: "INFO"                # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/vestigium.log"
+  max_file_size_mb: 100
+  backup_count: 5
+
+  # Módulos específicos
+  modules:
+    signal_processor: "INFO"
+    neuromorphic: "INFO"
+    slam: "WARNING"
+    websocket: "INFO"
+
+# ============================================================================
+# PERFORMANCE & OPTIMIZATION
+# ============================================================================
+performance:
+  # Caching
+  cache_enabled: true
+  cache_size_mb: 512
+
+  # Batch processing
+  batch_size: 32               # Para procesamiento paralelo en JAX
+
+  # Timeouts
+  signal_timeout_seconds: 5
+  network_timeout_seconds: 10
+
+  # Profiling
+  profiling_enabled: false
+  profiling_interval_seconds: 60
+
+# ============================================================================
+# ADVANCED - Configuraciones Avanzadas
+# ============================================================================
+advanced:
+  # Modos de operación
+  mode: "normal"               # "normal", "debug", "training", "benchmark"
+
+  # Calibración
+  calibration:
+    auto_calibration_enabled: true
+    calibration_duration_seconds: 300  # 5 minutos
+
+  # Noise floor estimation
+  noise_floor:
+    adaptive: true
+    update_rate_seconds: 30
+
+  # Multi-router support
+  multi_router:
+    enabled: false
+    routers: []                # Lista de IPs adicionales si aplica
+
+  # Experimental features
+  experimental:
+    phase_estimation: false    # Estimación de fase experimental
+    mimo_processing: false     # Procesamiento MIMO
+    angle_of_arrival: false    # Estimación de ángulo de llegada
+
+# ============================================================================
+# SECURITY (Básico - Para desarrollo local)
+# ============================================================================
+security:
+  ssl_enabled: false
+  verify_ssl: false
+  auth_token: ""               # Token de autenticación si aplica
+  allowed_origins: ["*"]       # Para CORS en desarrollo
+
+# ============================================================================
+# PATHS & FILES
+# ============================================================================
+paths:
+  logs_dir: "./logs"
+  data_dir: "./data"
+  models_dir: "./models"
+  cache_dir: "./.cache"
+  temp_dir: "./tmp"
