@@ -1,26 +1,33 @@
 """
 VESTIGIUM PHASE 1: Signal Processor - CSI Virtual Extraction
-Extrae "CSI Virtual" del análisis de varianza de RSSI
+Full JAX implementation for GPU acceleration.
+Zero Python loops. All operations vectorized on GPU.
 """
 
+import jax
+import jax.numpy as jnp
+from jax import jit, lax
+from typing import Dict, NamedTuple
 import numpy as np
-from typing import Tuple, Dict, Optional
-from collections import deque
-from scipy import signal as scipy_signal
 import logging
 
 logger = logging.getLogger(__name__)
 
 
+class SignalProcessorState(NamedTuple):
+    """State container for signal processor."""
+    rssi_buffer: jnp.ndarray  # (buffer_size, num_routers, num_bands)
+    baseline_variance: jnp.ndarray  # (num_routers, num_bands)
+    baseline_samples: int
+    buffer_index: int
+
+
 class SignalProcessor:
     """
-    Procesa señales WiFi para extraer CSI virtual
+    GPU-accelerated signal processing for WiFi RSSI.
 
-    Pasos:
-    1. Buffer circular de RSSI
-    2. Análisis de varianza temporal
-    3. FFT para detectar patrones
-    4. Fusión de bandas (2.4GHz + 5GHz)
+    All computation is JAX-jitted for maximum performance.
+    Maintains ring buffer on GPU, computes variance/FFT/band-ratio in one pass.
     """
 
     def __init__(
@@ -31,213 +38,178 @@ class SignalProcessor:
         sampling_rate_hz: int = 100,
     ):
         """
-        Inicializa el procesador de señales
+        Initialize signal processor.
 
         Args:
-            num_routers: Número de routers WiFi a monitorear
-            num_bands: Número de bandas (2.4GHz, 5GHz)
-            window_size_ms: Tamaño de ventana para análisis
-            sampling_rate_hz: Frecuencia de muestreo RSSI
+            num_routers: Number of WiFi APs
+            num_bands: 2 = [2.4GHz, 5GHz]
+            window_size_ms: Analysis window size
+            sampling_rate_hz: RSSI sampling rate
         """
         self.num_routers = num_routers
         self.num_bands = num_bands
         self.window_size_ms = window_size_ms
         self.sampling_rate_hz = sampling_rate_hz
 
-        # Calcular tamaño de buffer
+        # Buffer size: keep 5 windows of history
         self.window_samples = int(window_size_ms * sampling_rate_hz / 1000)
+        self.buffer_size = self.window_samples * 5
 
-        # Buffer circular para RSSI
-        self.rssi_buffer = deque(
-            maxlen=self.window_samples * 5  # 5 ventanas de histórico
+        # Initialize state on GPU
+        self.state = SignalProcessorState(
+            rssi_buffer=jnp.zeros((self.buffer_size, num_routers, num_bands), dtype=jnp.float32),
+            baseline_variance=jnp.ones((num_routers, num_bands), dtype=jnp.float32) * 2.0,
+            baseline_samples=0,
+            buffer_index=0,
         )
 
-        # Baseline de varianza (se calibra automáticamente)
-        self.baseline_variance = None
-        self.baseline_samples = 0
+        # Compile JAX functions
+        self._compiled_process = jit(self._process_jit)
+        self._compiled_update_buffer = jit(self._update_buffer_jit)
+        self._compiled_update_baseline = jit(self._update_baseline_jit)
 
         logger.info(
-            f"SignalProcessor inicializado: "
-            f"{num_routers} routers × {num_bands} bandas, "
-            f"ventana={window_size_ms}ms, fs={sampling_rate_hz}Hz"
+            f"SignalProcessor (JAX GPU): {num_routers} routers × {num_bands} bands, "
+            f"buffer={self.buffer_size} samples, window={self.window_samples}"
         )
 
-    def process_rssi(
-        self, rssi_matrix: np.ndarray
-    ) -> Dict[str, np.ndarray]:
+    def process_rssi(self, rssi_data: np.ndarray) -> Dict:
         """
-        Procesa matriz de RSSI y extrae CSI virtual
+        Process new RSSI sample.
 
         Args:
-            rssi_matrix: Array de shape (num_routers, num_bands)
-                        Valores RSSI en dBm
+            rssi_data: np.ndarray shape (num_routers, num_bands) in dBm
 
         Returns:
-            Dict con:
-            - 'csi_virtual': Matriz de varianza CSI
-            - 'power_spectrum': Espectro de potencia FFT
-            - 'band_ratio': Diferencia 2.4GHz vs 5GHz
+            Dict with CSI virtual, power spectrum, band ratio
         """
-        # Agregar nueva muestra al buffer
-        self.rssi_buffer.append(rssi_matrix.copy())
+        # Convert to JAX array
+        rssi_jax = jnp.asarray(rssi_data, dtype=jnp.float32)
 
-        if len(self.rssi_buffer) < self.window_samples:
-            # Buffer aún no lleno
+        # Update buffer (ring buffer operation on GPU)
+        self.state = self._compiled_update_buffer(self.state, rssi_jax)
+
+        # Update baseline (exponential moving average)
+        self.state = self._compiled_update_baseline(self.state, rssi_jax)
+
+        # If buffer not full yet, return None
+        if self.state.baseline_samples < self.window_samples:
             return {
                 "csi_virtual": None,
                 "power_spectrum": None,
                 "band_ratio": None,
             }
 
-        # Convertir buffer a array
-        rssi_history = np.array(list(self.rssi_buffer))
-        # Shape: (buffer_len, num_routers, num_bands)
-
-        # Fase 1.1: Análisis de varianza
-        csi_virtual = self._compute_variance(rssi_history)
-
-        # Fase 1.2: Análisis espectral FFT
-        power_spectrum = self._compute_power_spectrum(rssi_history)
-
-        # Fase 1.3: Fusión de bandas
-        band_ratio = self._compute_band_ratio(rssi_history)
+        # Process full pipeline
+        csi_virtual, power_spectrum, band_ratio = self._compiled_process(self.state)
 
         return {
-            "csi_virtual": csi_virtual,
-            "power_spectrum": power_spectrum,
-            "band_ratio": band_ratio,
-            "timestamp": rssi_matrix,
+            "csi_virtual": np.asarray(csi_virtual),  # Return as numpy
+            "power_spectrum": np.asarray(power_spectrum),
+            "band_ratio": np.asarray(band_ratio),
+            "timestamp": rssi_data,
         }
 
-    def _compute_variance(self, rssi_history: np.ndarray) -> np.ndarray:
-        """
-        Calcula varianza temporal de RSSI
-
-        Args:
-            rssi_history: Array de shape (time, routers, bands)
-
-        Returns:
-            Varianza normalizada, shape (routers, bands)
-        """
-        # Ventanas móviles
-        variance = np.zeros((self.num_routers, self.num_bands))
-
-        for router_idx in range(self.num_routers):
-            for band_idx in range(self.num_bands):
-                # Extraer serie temporal para este router/banda
-                series = rssi_history[:, router_idx, band_idx]
-
-                # Calcular varianza
-                local_variance = np.var(series)
-
-                # Normalizar contra baseline
-                if self.baseline_variance is not None:
-                    variance[router_idx, band_idx] = (
-                        local_variance - self.baseline_variance[router_idx, band_idx]
-                    ) / (self.baseline_variance[router_idx, band_idx] + 1e-6)
-                else:
-                    variance[router_idx, band_idx] = local_variance
-
-        # Auto-calibración: actualizar baseline
-        self.baseline_samples += 1
-        if self.baseline_samples < 100:  # Primeras 100 muestras
-            if self.baseline_variance is None:
-                self.baseline_variance = np.var(rssi_history, axis=0)
-            else:
-                # Promedio móvil del baseline
-                alpha = 1.0 / self.baseline_samples
-                new_baseline = np.var(rssi_history, axis=0)
-                self.baseline_variance = (
-                    1 - alpha
-                ) * self.baseline_variance + alpha * new_baseline
-
-        return variance
-
-    def _compute_power_spectrum(
-        self, rssi_history: np.ndarray
-    ) -> np.ndarray:
-        """
-        Calcula espectro de potencia via FFT
-
-        Args:
-            rssi_history: Array de shape (time, routers, bands)
-
-        Returns:
-            Power spectrum, shape (routers, bands, freq_bins)
-        """
-        power_spectrum = np.zeros(
-            (self.num_routers, self.num_bands, self.window_samples // 2)
+    @staticmethod
+    def _update_buffer_jit(state: SignalProcessorState, rssi_new: jnp.ndarray) -> SignalProcessorState:
+        """Ring buffer update (JAX JIT)."""
+        idx = state.buffer_index % state.rssi_buffer.shape[0]
+        rssi_buffer_new = state.rssi_buffer.at[idx].set(rssi_new)
+        return state._replace(
+            rssi_buffer=rssi_buffer_new,
+            buffer_index=state.buffer_index + 1,
         )
 
-        for router_idx in range(self.num_routers):
-            for band_idx in range(self.num_bands):
-                series = rssi_history[:, router_idx, band_idx]
+    @staticmethod
+    def _update_baseline_jit(state: SignalProcessorState, rssi_new: jnp.ndarray) -> SignalProcessorState:
+        """Update baseline variance (JAX JIT)."""
+        def do_calibration(_):
+            # First 100 samples: compute mean variance
+            new_var = jnp.var(rssi_new)  # Scalar
+            alpha = 1.0 / (state.baseline_samples + 1)
+            baseline_new = (1 - alpha) * state.baseline_variance + alpha * new_var
+            return baseline_new, state.baseline_samples + 1
 
-                # Aplicar ventana Hann para reducir leakage
-                windowed = series * np.hanning(len(series))
+        def no_calibration(_):
+            return state.baseline_variance, state.baseline_samples
 
-                # FFT
-                fft_result = np.fft.fft(windowed)
-                magnitude = np.abs(fft_result[: len(fft_result) // 2])
+        # Conditional: only update first 100 samples
+        baseline_new, samples_new = lax.cond(
+            state.baseline_samples < 100,
+            do_calibration,
+            no_calibration,
+            None,
+        )
 
-                # Power spectrum (magnitud al cuadrado)
-                power_spectrum[router_idx, band_idx, :] = magnitude**2
+        return state._replace(
+            baseline_variance=baseline_new,
+            baseline_samples=samples_new,
+        )
 
-        return power_spectrum
-
-    def _compute_band_ratio(self, rssi_history: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _process_jit(state: SignalProcessorState):
         """
-        Calcula razón de atenuación entre bandas
-
-        Indicador de profundidad/tamaño de objeto
-
-        Args:
-            rssi_history: Array de shape (time, routers, bands)
-
-        Returns:
-            Ratio 2.4GHz/5GHz por router
+        Main processing pipeline (JAX JIT).
+        Variance, FFT, band ratio—all on GPU.
         """
-        band_2_4ghz = rssi_history[:, :, 0]  # banda 2.4
-        band_5ghz = rssi_history[:, :, 1]  # banda 5
+        buffer = state.rssi_buffer
 
-        # Promedios en tiempo
-        mean_2_4 = np.mean(band_2_4ghz, axis=0)
-        mean_5 = np.mean(band_5ghz, axis=0)
+        # Variance: (buffer_size, num_routers, num_bands) → (num_routers, num_bands)
+        variance = jnp.var(buffer, axis=0)
+        variance_normalized = (variance - state.baseline_variance) / (state.baseline_variance + 1e-6)
 
-        # Ratio (evitar división por cero)
-        ratio = mean_2_4 / (mean_5 + 1e-6)
+        # Power spectrum: FFT along time axis
+        fft_result = jnp.fft.rfft(buffer, axis=0)
+        power_spectrum = jnp.abs(fft_result) ** 2
 
-        return ratio
+        # Band ratio: mean 2.4GHz / mean 5GHz
+        mean_2_4 = jnp.mean(buffer[:, :, 0], axis=0)  # (num_routers,)
+        mean_5 = jnp.mean(buffer[:, :, 1], axis=0)
+        band_ratio = mean_2_4 / (mean_5 + 1e-6)  # (num_routers,)
 
-    def reset_baseline(self):
-        """Reinicia calibración de baseline"""
-        self.baseline_variance = None
-        self.baseline_samples = 0
-        logger.info("Baseline reseteado")
+        return variance_normalized, power_spectrum, band_ratio
 
-    def get_stats(self) -> Dict[str, float]:
-        """Retorna estadísticas del procesador"""
+    def get_stats(self) -> Dict:
+        """Runtime statistics."""
         return {
-            "buffer_size": len(self.rssi_buffer),
-            "baseline_samples": self.baseline_samples,
+            "buffer_index": int(self.state.buffer_index),
+            "baseline_samples": int(self.state.baseline_samples),
+            "buffer_size": self.buffer_size,
             "window_samples": self.window_samples,
         }
 
+    def reset_baseline(self):
+        """Reset calibration."""
+        self.state = self.state._replace(
+            baseline_variance=jnp.ones((self.num_routers, self.num_bands)) * 2.0,
+            baseline_samples=0,
+        )
+        logger.info("Baseline reset")
 
-if __name__ == "__main__":
-    # Test básico
+
+async def main():
+    """Demo with synthetic data."""
     logging.basicConfig(level=logging.INFO)
 
     processor = SignalProcessor(num_routers=10, num_bands=2)
 
-    # Simular RSSI aleatorio
+    logger.info("Processing 200 synthetic RSSI samples...")
+
     for i in range(200):
-        # RSSI típicamente entre -30 y -90 dBm
-        rssi_data = np.random.normal(-60, 5, size=(10, 2))
+        # Synthetic RSSI: -60 dBm ± 5 dBm
+        rssi_data = np.random.normal(-60, 5, size=(10, 2)).astype(np.float32)
         result = processor.process_rssi(rssi_data)
 
-        if result["csi_virtual"] is not None:
-            print(f"Iteración {i}: CSI Virtual shape={result['csi_virtual'].shape}")
-            break
+        if i == 50:
+            if result["csi_virtual"] is not None:
+                logger.info(f"✓ Frame {i}: CSI shape {result['csi_virtual'].shape}, "
+                           f"mean variance {result['csi_virtual'].mean():.4f}")
 
-    print("✓ Signal Processor test completado")
+    stats = processor.get_stats()
+    logger.info(f"Final stats: {stats}")
+    logger.info("✓ Signal Processor test completed")
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VESTIGIUM - WiFi Biomass Radar</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 100%);
+            color: #e0e0e0;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+        }
+
+        .title {
+            padding: 10px;
+            text-align: center;
+            font-size: 24px;
+            font-weight: bold;
+            color: #00ff88;
+            text-shadow: 0 0 10px #00ff88;
+        }
+
+        .canvas-container {
+            flex: 1;
+            position: relative;
+            background: #0a0a0f;
+            border: 2px solid #00ff88;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        .stat {
+            text-align: center;
+            padding: 8px;
+            background: rgba(0, 255, 136, 0.1);
+            border-radius: 4px;
+            border: 1px solid #00ff88;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #00ff88;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00ff88;
+        }
+
+        .sidebar {
+            width: 250px;
+            background: rgba(0, 0, 0, 0.7);
+            border-left: 2px solid #00ff88;
+            padding: 10px;
+            overflow-y: auto;
+        }
+
+        .cluster-list {
+            margin-top: 10px;
+        }
+
+        .cluster-item {
+            padding: 8px;
+            margin: 5px 0;
+            background: rgba(0, 255, 136, 0.1);
+            border-left: 3px solid #00ff88;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .cluster-pos {
+            color: #00ff88;
+            font-weight: bold;
+        }
+
+        .cluster-conf {
+            color: #888;
+            font-size: 10px;
+        }
+
+        .status {
+            padding: 8px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 12px;
+            text-align: center;
+        }
+
+        .status.connected {
+            background: rgba(0, 255, 0, 0.2);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        .status.disconnected {
+            background: rgba(255, 0, 0, 0.2);
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+
+        .legend {
+            margin-top: 20px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+        }
+
+        .legend-box {
+            width: 15px;
+            height: 15px;
+            margin-right: 8px;
+            border-radius: 2px;
+        }
+
+        .orb {
+            background: radial-gradient(circle, #00ffff 0%, #0088ff 50%, transparent 70%);
+        }
+
+        .trail {
+            background: rgba(0, 255, 136, 0.5);
+        }
+
+        .heatmap {
+            background: rgba(255, 100, 0, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="main">
+            <div class="title">🌊 VESTIGIUM - WiFi Biomass Radar</div>
+            <div class="canvas-container">
+                <canvas id="canvas"></canvas>
+            </div>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-label">FPS</div>
+                    <div class="stat-value" id="fps">0</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Clusters</div>
+                    <div class="stat-value" id="clusters">0</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Detections</div>
+                    <div class="stat-value" id="detections">0</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Latency</div>
+                    <div class="stat-value" id="latency">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <div id="status" class="status disconnected">⚫ Disconnected</div>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-box orb"></div>
+                    <span>Clusters (glow)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-box trail"></div>
+                    <span>Movement trail</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-box heatmap"></div>
+                    <span>Occupancy heatmap</span>
+                </div>
+            </div>
+
+            <div class="cluster-list">
+                <h3 style="color: #00ff88; margin-bottom: 10px; font-size: 12px;">DETECTED CLUSTERS</h3>
+                <div id="clusters-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { alpha: true });
+        const statusDiv = document.getElementById('status');
+        const clustersDiv = document.getElementById('clusters-container');
+
+        let ws = null;
+        let frameBuffer = [];
+        let clusterTrails = {};
+        let lastFrameTime = Date.now();
+        let frameCount = 0;
+        let fps = 0;
+        let heatmapImage = null;
+        let latestStats = {};
+
+        // Resize canvas
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // Connect to WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                statusDiv.textContent = '🟢 Connected';
+                statusDiv.className = 'status connected';
+                console.log('Connected to VESTIGIUM server');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const frame = JSON.parse(event.data);
+                    frameBuffer = [frame];  // Keep latest frame
+
+                    // Update heatmap image
+                    if (frame.heatmap) {
+                        const img = new Image();
+                        img.src = frame.heatmap;
+                        img.onload = () => {
+                            heatmapImage = img;
+                        };
+                    }
+
+                    // Update stats
+                    latestStats = frame.stats || {};
+                    updateStats();
+                    updateClusters(frame.clusters);
+
+                } catch (e) {
+                    console.error('Failed to parse frame:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                statusDiv.textContent = '🔴 Error';
+                statusDiv.className = 'status disconnected';
+            };
+
+            ws.onclose = () => {
+                statusDiv.textContent = '⚫ Disconnected';
+                statusDiv.className = 'status disconnected';
+                console.log('Disconnected from server, retrying...');
+                setTimeout(connect, 3000);
+            };
+        }
+
+        // Update stats display
+        function updateStats() {
+            document.getElementById('clusters').textContent = latestStats.clusters || 0;
+            document.getElementById('detections').textContent = latestStats.detections || 0;
+            document.getElementById('fps').textContent = Math.round(fps);
+        }
+
+        // Update cluster list
+        function updateClusters(clusters) {
+            clustersDiv.innerHTML = '';
+
+            if (!clusters || clusters.length === 0) {
+                clustersDiv.innerHTML = '<div style="color: #666;">No clusters detected</div>';
+                return;
+            }
+
+            clusters.forEach((cluster, idx) => {
+                const div = document.createElement('div');
+                div.className = 'cluster-item';
+                div.innerHTML = `
+                    <div class="cluster-pos">Cluster ${idx + 1}</div>
+                    <div>X: ${cluster.x.toFixed(1)}m | Y: ${cluster.y.toFixed(1)}m</div>
+                    <div class="cluster-conf">Confidence: ${(cluster.confidence * 100).toFixed(0)}%</div>
+                `;
+                clustersDiv.appendChild(div);
+            });
+        }
+
+        // Animation loop
+        function animate() {
+            // Calculate FPS
+            const now = Date.now();
+            frameCount++;
+            if (now - lastFrameTime > 1000) {
+                fps = frameCount;
+                frameCount = 0;
+                lastFrameTime = now;
+            }
+
+            // Clear canvas with semi-transparent overlay (motion blur)
+            ctx.fillStyle = 'rgba(10, 10, 15, 0.2)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw heatmap if available
+            if (heatmapImage) {
+                ctx.globalAlpha = 0.6;
+                ctx.drawImage(heatmapImage, 0, 0, canvas.width, canvas.height);
+                ctx.globalAlpha = 1.0;
+            }
+
+            // Draw grid
+            ctx.strokeStyle = 'rgba(0, 255, 136, 0.1)';
+            ctx.lineWidth = 1;
+            const gridSize = 50;
+            for (let i = 0; i < canvas.width; i += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, canvas.height);
+                ctx.stroke();
+            }
+            for (let i = 0; i < canvas.height; i += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, i);
+                ctx.lineTo(canvas.width, i);
+                ctx.stroke();
+            }
+
+            // Draw clusters
+            if (frameBuffer.length > 0) {
+                const frame = frameBuffer[0];
+                const clusters = frame.clusters || [];
+
+                clusters.forEach((cluster) => {
+                    // Normalize coordinates to canvas
+                    const x = (cluster.x + 25) / 50 * canvas.width;  // Assume ±25m
+                    const y = (cluster.y + 25) / 50 * canvas.height;
+
+                    // Draw trail
+                    const id = `${cluster.x.toFixed(1)}_${cluster.y.toFixed(1)}`;
+                    if (!clusterTrails[id]) {
+                        clusterTrails[id] = [];
+                    }
+                    clusterTrails[id].push({ x, y, time: Date.now() });
+                    if (clusterTrails[id].length > 20) {
+                        clusterTrails[id].shift();
+                    }
+
+                    // Draw trail line
+                    const trail = clusterTrails[id];
+                    if (trail.length > 1) {
+                        ctx.strokeStyle = 'rgba(0, 255, 136, 0.4)';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(trail[0].x, trail[0].y);
+                        for (let i = 1; i < trail.length; i++) {
+                            ctx.lineTo(trail[i].x, trail[i].y);
+                        }
+                        ctx.stroke();
+                    }
+
+                    // Draw cluster orb (glowing circle)
+                    const radius = 10 + cluster.confidence * 10;
+                    const glow = ctx.createRadialGradient(x, y, 0, x, y, radius);
+                    glow.addColorStop(0, `rgba(0, 255, 255, ${cluster.confidence})`);
+                    glow.addColorStop(0.5, `rgba(0, 136, 255, ${cluster.confidence * 0.5})`);
+                    glow.addColorStop(1, 'rgba(0, 100, 200, 0)');
+
+                    ctx.fillStyle = glow;
+                    ctx.beginPath();
+                    ctx.arc(x, y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw center dot
+                    ctx.fillStyle = '#00ffff';
+                    ctx.beginPath();
+                    ctx.arc(x, y, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+
+            updateStats();
+            requestAnimationFrame(animate);
+        }
+
+        // Start animation and connect
+        animate();
+        connect();
+    </script>
+</body>
+</html>
