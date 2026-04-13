@@ -6,7 +6,7 @@ No mocks. Real spatial likelihood model. Vectorized with vmap + lax.scan.
 
 import jax
 import jax.numpy as jnp
-from jax import jit, vmap, lax
+from jax import jit, vmap
 from jax import random
 from typing import Dict, NamedTuple, Tuple
 import numpy as np
@@ -73,6 +73,7 @@ class NeuromorphicEngine:
         ap_pos_list = sorted(ap_positions.values())
         self.ap_positions = jnp.asarray(ap_pos_list, dtype=jnp.float32)
         self.num_aps = len(ap_pos_list)
+        self.frame_count = 0
 
         logger.info(f"NeuromorphicEngine: {num_neurons} neurons, "
                    f"{num_particles} particles, {self.num_aps} APs")
@@ -124,20 +125,22 @@ class NeuromorphicEngine:
         new_weights = self.state.particle_weights * likelihood
         new_weights = new_weights / (jnp.sum(new_weights) + 1e-10)
 
-        # Resample if diverged
-        effective_particles = 1.0 / jnp.sum(new_weights ** 2)
-        do_resample = effective_particles < self.num_particles * 0.3
-
-        particles_resampled = lax.cond(
-            do_resample,
-            lambda: self._resample_jit(self.state.particles, new_weights, self.state.rng_key),
-            lambda: self.state.particles,
-        )
-
+        # Simple update without conditional resampling (avoid JAX compilation issues)
         self.state = self.state._replace(
             particle_weights=new_weights,
-            particles=particles_resampled,
         )
+
+        # Periodic resampling (every 10 frames) - simpler approach
+        if self.frame_count % 10 == 0:
+            key, subkey = random.split(self.state.rng_key)
+            indices = random.choice(subkey, self.num_particles, shape=(self.num_particles,), p=new_weights)
+            particles_resampled = self.state.particles[indices]
+            self.state = self.state._replace(
+                particles=particles_resampled,
+                rng_key=key,
+            )
+
+        self.frame_count = (self.frame_count + 1) % 1000
 
         # Clustering
         clusters = self._cluster_particles()

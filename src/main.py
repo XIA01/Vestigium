@@ -212,20 +212,15 @@ class VestigiumSystem:
 
         # Create tasks
         server_task = asyncio.create_task(self.ws_server.start())
-        broadcast_task = asyncio.create_task(self.ws_server.broadcast_loop())
         processing_task = asyncio.create_task(self.processing_loop())
 
-        # Wait for any to finish (should not happen unless error)
-        done, pending = await asyncio.wait(
-            [server_task, broadcast_task, processing_task],
-            return_when=asyncio.FIRST_EXCEPTION,
-        )
-
-        # Cancel remaining
-        for task in pending:
-            task.cancel()
-
-        logger.info("Pipeline shutdown complete")
+        # Wait indefinitely (only exit on shutdown_event)
+        try:
+            await asyncio.gather(server_task, processing_task)
+        except asyncio.CancelledError:
+            logger.info("Pipeline tasks cancelled")
+        except Exception as e:
+            logger.error(f"Pipeline error: {e}", exc_info=True)
 
     def shutdown(self):
         """Graceful shutdown."""

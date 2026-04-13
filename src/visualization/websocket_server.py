@@ -1,6 +1,7 @@
 """
 VESTIGIUM WebSocket Server - Real-time visualization streaming
-Async websockets server, no blocking operations.
+HTTP + WebSocket server using aiohttp for full async support.
+Serves HTML frontend + WebSocket data stream.
 """
 
 import asyncio
@@ -9,8 +10,14 @@ import base64
 import logging
 from typing import Dict, Any
 from io import BytesIO
-import websockets
-from websockets.server import WebSocketServerProtocol
+from pathlib import Path
+
+try:
+    from aiohttp import web
+    HAS_AIOHTTP = True
+except ImportError:
+    HAS_AIOHTTP = False
+    web = None
 
 try:
     from PIL import Image
@@ -22,47 +29,85 @@ logger = logging.getLogger(__name__)
 
 class WebSocketServer:
     """
-    Async WebSocket server for real-time VESTIGIUM visualization.
+    HTTP + WebSocket server for real-time VESTIGIUM visualization.
 
-    Streams clusters, heatmap (PNG base64), and statistics at 30 FPS.
+    Serves:
+    - HTTP GET / → HTML frontend (index.html)
+    - WebSocket /ws → Real-time frame streaming
     """
 
     def __init__(self, host: str = "0.0.0.0", port: int = 5000):
         """
-        Initialize WebSocket server.
+        Initialize server.
 
         Args:
             host: Bind address
             port: Bind port
         """
+        if not HAS_AIOHTTP:
+            raise RuntimeError("aiohttp not installed. Run: pip install aiohttp")
+
         self.host = host
         self.port = port
         self.clients = set()
-        self.queue = asyncio.Queue(maxsize=2)  # Buffer latest 2 frames
+        self.app = None
+        self.runner = None
 
-        logger.info(f"WebSocketServer initialized on ws://{host}:{port}")
+        logger.info(f"WebSocketServer initialized on http://{host}:{port}")
 
     async def start(self):
-        """Start the server (non-blocking)."""
-        async with websockets.serve(self.handler, self.host, self.port):
-            logger.info(f"✓ WebSocket server running on ws://{self.host}:{self.port}")
-            await asyncio.Event().wait()  # Run forever
+        """Start the server."""
+        self.app = web.Application()
 
-    async def handler(self, websocket: WebSocketServerProtocol, path: str):
-        """Handle incoming WebSocket connection."""
-        self.clients.add(websocket)
-        logger.info(f"Client connected: {websocket.remote_address}. Total: {len(self.clients)}")
+        # Routes
+        self.app.router.add_get("/", self.handle_index)
+        self.app.router.add_get("/ws", self.handle_ws)
+
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, self.host, self.port)
+        await site.start()
+
+        logger.info(f"✓ HTTP+WebSocket server running on http://{self.host}:{self.port}")
+        logger.info(f"  Frontend: http://{self.host}:{self.port}/")
+        logger.info(f"  WebSocket: ws://{self.host}:{self.port}/ws")
+
+        # Keep running forever
+        await asyncio.Event().wait()
+
+    async def handle_index(self, request):
+        """Serve HTML frontend."""
+        frontend_path = Path(__file__).parent / "frontend" / "index.html"
+
+        if not frontend_path.exists():
+            return web.Response(text="Frontend not found", status=404)
+
+        with open(frontend_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def handle_ws(self, request):
+        """Handle WebSocket connection."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
+        client_addr = request.remote
+        self.clients.add(ws)
+        logger.info(f"WebSocket client connected: {client_addr}. Total: {len(self.clients)}")
 
         try:
-            async for message in websocket:
-                # Echo any client messages (for ping/pong or commands)
-                if message == "ping":
-                    await websocket.send("pong")
-        except websockets.exceptions.ConnectionClosed:
-            pass
+            async for msg in ws.iter_any():
+                # Handle incoming messages (ping/pong, etc)
+                if isinstance(msg, str) and msg == "ping":
+                    await ws.send_str("pong")
+        except Exception as e:
+            logger.debug(f"WebSocket error: {e}")
         finally:
-            self.clients.remove(websocket)
-            logger.info(f"Client disconnected. Total: {len(self.clients)}")
+            self.clients.discard(ws)
+            logger.info(f"WebSocket client disconnected. Total: {len(self.clients)}")
+
+        return ws
 
     async def broadcast_frame(self, frame_data: Dict[str, Any]):
         """
@@ -96,11 +141,11 @@ class WebSocketServer:
 
             message = json.dumps(payload)
 
-            # Broadcast to all clients (with timeout)
+            # Broadcast to all clients
             disconnected = []
             for client in self.clients:
                 try:
-                    await asyncio.wait_for(client.send(message), timeout=1.0)
+                    await asyncio.wait_for(client.send_str(message), timeout=1.0)
                 except Exception as e:
                     disconnected.append(client)
                     logger.debug(f"Failed to send to client: {e}")
@@ -156,40 +201,31 @@ class WebSocketServer:
             return ""
 
     async def send_frame(self, frame_data: Dict[str, Any]):
-        """Queue a frame for broadcast."""
-        try:
-            self.queue.put_nowait(frame_data)
-        except asyncio.QueueFull:
-            # Drop old frame, add new one
-            try:
-                self.queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            self.queue.put_nowait(frame_data)
+        """Queue a frame for broadcast (immediate in aiohttp)."""
+        await self.broadcast_frame(frame_data)
 
     async def broadcast_loop(self):
         """
-        Background task that broadcasts queued frames.
-        Run this concurrently with the server.
+        Background task (not needed with aiohttp, but kept for compatibility).
+        In aiohttp, broadcast_frame is already async.
         """
-        while True:
-            try:
-                frame_data = await self.queue.get()
-                await self.broadcast_frame(frame_data)
-            except Exception as e:
-                logger.error(f"Error in broadcast loop: {e}")
-            await asyncio.sleep(0.001)  # Minimal sleep
+        # aiohttp handles async natively, no queue needed
+        await asyncio.Event().wait()
+
+    async def stop(self):
+        """Stop the server gracefully."""
+        if self.runner:
+            await self.runner.cleanup()
 
 
 async def main():
-    """Demo: start server, wait for clients."""
+    """Demo: start server and simulate frames."""
     logging.basicConfig(level=logging.INFO)
 
     server = WebSocketServer()
 
-    # Start server and broadcast loop
+    # Start server
     server_task = asyncio.create_task(server.start())
-    broadcast_task = asyncio.create_task(server.broadcast_loop())
 
     # Simulate frame generation
     async def simulate_frames():
@@ -209,7 +245,7 @@ async def main():
 
     sim_task = asyncio.create_task(simulate_frames())
 
-    await asyncio.gather(server_task, broadcast_task, sim_task)
+    await asyncio.gather(server_task, sim_task)
 
 
 if __name__ == "__main__":

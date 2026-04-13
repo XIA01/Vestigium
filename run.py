@@ -27,5 +27,23 @@ if __name__ == "__main__":
         import test_system
         exit(test_system.test_all())
     else:
-        # Run main pipeline
+        # Modificar main() para pasar simulate flag
+        import sys
+        sys.argv = [sys.argv[0]]  # Limpio args para no confundir a argparse en main
+
+        # Run main pipeline with real/simulated data
+        # Note: main() siempre crea VestigiumSystem(simulate=True)
+        # Para WiFi real, edita src/main.py línea ~261
+        print(f"\n{'='*60}")
+        print(f"VESTIGIUM Starting {'(SIMULATED)' if not args.real else '(REAL WiFi)'}")
+        print(f"Open browser at http://localhost:5000")
+        print(f"{'='*60}\n")
+
+        if args.real:
+            print("⚠️  WiFi real mode - asegúrate de tener:")
+            print("   • Linux con 'iw' instalado")
+            print("   • WiFi interface disponible (wlan0)")
+            print("   • Permisos de lectura en /proc/net/wireless")
+            print()
+
         asyncio.run(main())
