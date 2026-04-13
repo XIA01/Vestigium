@@ -210,13 +210,12 @@ class VestigiumSystem:
         logger.info("Starting VESTIGIUM pipeline...")
         logger.info("=" * 60)
 
-        # Create tasks
-        server_task = asyncio.create_task(self.ws_server.start())
+        # Create processing task only (server is handled by uvicorn)
         processing_task = asyncio.create_task(self.processing_loop())
 
         # Wait indefinitely (only exit on shutdown_event)
         try:
-            await asyncio.gather(server_task, processing_task)
+            await processing_task
         except asyncio.CancelledError:
             logger.info("Pipeline tasks cancelled")
         except Exception as e:
