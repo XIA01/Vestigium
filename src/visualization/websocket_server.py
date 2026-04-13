@@ -90,26 +90,35 @@ class WebSocketServer:
     async def handle_ws(self, request):
         """Handle WebSocket connection."""
         ws = web.WebSocketResponse()
-        await ws.prepare(request)
+        logger.info(f"WebSocket handler called for {request.remote}")
+
+        try:
+            await ws.prepare(request)
+        except Exception as e:
+            logger.error(f"Failed to prepare WebSocket: {e}")
+            return ws
 
         client_addr = request.remote
         self.clients.add(ws)
-        logger.info(f"WebSocket client connected: {client_addr}. Total: {len(self.clients)}")
+        logger.info(f"✓ WebSocket client connected: {client_addr}. Total: {len(self.clients)}")
 
         try:
-            async for msg in ws.iter_any():
-                # Handle incoming messages (ping/pong, etc)
-                if isinstance(msg, str):
-                    if msg == "ping":
-                        try:
-                            await ws.send_str("pong")
-                        except Exception as e:
-                            logger.debug(f"Error sending pong: {e}")
-                            break
+            async for msg in ws:
+                # Handle incoming messages
+                if isinstance(msg, web.WSMessage):
+                    if msg.type == web.WSMsgType.TEXT:
+                        if msg.data == "ping":
+                            try:
+                                await ws.send_str("pong")
+                            except Exception as e:
+                                logger.debug(f"Error sending pong: {e}")
+                                break
+                    elif msg.type == web.WSMsgType.CLOSE:
+                        break
         except asyncio.CancelledError:
             logger.debug(f"WebSocket cancelled: {client_addr}")
         except Exception as e:
-            logger.debug(f"WebSocket error ({client_addr}): {e}")
+            logger.debug(f"WebSocket error ({client_addr}): {type(e).__name__}: {e}")
         finally:
             self.clients.discard(ws)
             logger.info(f"WebSocket client disconnected. Total: {len(self.clients)}")
